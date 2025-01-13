@@ -1,4 +1,4 @@
-# Copyright (c) 2023 - 2024, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2023 - 2025, Oracle and/or its affiliates. All rights reserved.
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
 
 """
@@ -34,7 +34,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from macaron.artifact.maven import MavenSubjectPURLMatcher
 from macaron.database.database_manager import ORMBase
-from macaron.database.db_custom_types import RFC3339DateTime
+from macaron.database.db_custom_types import ProvenancePayload, RFC3339DateTime
 from macaron.errors import InvalidPURLError
 from macaron.slsa_analyzer.provenance.intoto import InTotoPayload, ProvenanceSubjectPURLMatcher
 from macaron.slsa_analyzer.slsa_req import ReqName
@@ -481,14 +481,26 @@ class Provenance(ORMBase):
     #: The SLSA version.
     version: Mapped[str] = mapped_column(String, nullable=False)
 
+    #: The SLSA level.
+    slsa_level: Mapped[int] = mapped_column(Integer, default=0)
+
     #: The release tag commit sha.
     release_commit_sha: Mapped[str] = mapped_column(String, nullable=True)
 
     #: The release tag.
     release_tag: Mapped[str] = mapped_column(String, nullable=True)
 
-    #: The provenance payload content in JSON format.
-    provenance_json: Mapped[str] = mapped_column(String, nullable=False)
+    #: The repository URL from the provenance.
+    repository_url: Mapped[str] = mapped_column(String, nullable=True)
+
+    #: The commit sha from the provenance.
+    commit_sha: Mapped[str] = mapped_column(String, nullable=True)
+
+    #: The provenance payload.
+    provenance_payload: Mapped[InTotoPayload] = mapped_column(ProvenancePayload, nullable=False)
+
+    #: The verified status of the provenance.
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     #: A one-to-many relationship with the release artifacts.
     artifact: Mapped[list["ReleaseArtifact"]] = relationship(back_populates="provenance")
