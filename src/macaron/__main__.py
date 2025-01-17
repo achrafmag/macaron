@@ -1,4 +1,4 @@
-# Copyright (c) 2022 - 2024, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2022 - 2025, Oracle and/or its affiliates. All rights reserved.
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
 
 """This is the main entrypoint to run Macaron."""
@@ -179,7 +179,7 @@ def analyze_slsa_levels_single(analyzer_single_args: argparse.Namespace) -> None
         analyzer_single_args.sbom_path,
         deps_depth,
         provenance_payload=prov_payload,
-        validate_malware_switch=analyzer_single_args.validate_malware_switch,
+        analyze_source=analyzer_single_args.analyze_source,
     )
     sys.exit(status_code)
 
@@ -486,10 +486,13 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     single_analyze_parser.add_argument(
-        "--validate-malware-switch",
+        "--analyze-source",
         required=False,
         action="store_true",
-        help=("Enable malware validation."),
+        help=(
+            "EXPERIMENTAL. For improved malware detection, analyze the source code of the"
+            + " (PyPI) package using a textual scan and dataflow analysis."
+        ),
     )
 
     # Dump the default values.

@@ -1,4 +1,4 @@
-# Copyright (c) 2022 - 2024, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2022 - 2025, Oracle and/or its affiliates. All rights reserved.
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
 
 """This module contains the Analyze Context class.
@@ -57,8 +57,8 @@ class ChecksOutputs(TypedDict):
     """True if the provenance exists and has been verified against a signed companion provenance."""
     local_artifact_paths: list[str]
     """The local artifact absolute paths."""
-    validate_malware_switch: bool
-    """True when the malware validation is enabled."""
+    analyze_source: bool
+    """True when PyPI source code analysis has been enabled."""
 
 
 class AnalyzeContext:
@@ -115,7 +115,7 @@ class AnalyzeContext:
             provenance_commit_digest=None,
             provenance_verified=False,
             local_artifact_paths=[],
-            validate_malware_switch=False,
+            analyze_source=False,
         )
 
     @property
