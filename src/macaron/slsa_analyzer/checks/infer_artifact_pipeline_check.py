@@ -1,4 +1,4 @@
-# Copyright (c) 2023 - 2024, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2023 - 2025, Oracle and/or its affiliates. All rights reserved.
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
 
 """This module contains the InferArtifactPipelineCheck class to check if an artifact is published from a pipeline automatically."""
@@ -194,7 +194,7 @@ class ArtifactPipelineCheck(BaseCheck):
             # Obtain the job and step calling the deploy command.
             # This data must have been found already by the build-as-code check.
             build_predicate = ci_info["build_info_results"].statement["predicate"]
-            if build_predicate is None:
+            if build_predicate is None or build_predicate["buildType"] != f"Custom {ci_service.name}":
                 continue
             build_entry_point = json_extract(build_predicate, ["invocation", "configSource", "entryPoint"], str)
 

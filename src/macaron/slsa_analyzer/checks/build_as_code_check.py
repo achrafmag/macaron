@@ -1,4 +1,4 @@
-# Copyright (c) 2022 - 2024, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2022 - 2025, Oracle and/or its affiliates. All rights reserved.
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl/.
 
 """This module contains the BuildAsCodeCheck class."""
@@ -27,7 +27,6 @@ from macaron.slsa_analyzer.ci_service.github_actions.analyzer import (
     GitHubWorkflowType,
 )
 from macaron.slsa_analyzer.ci_service.gitlab_ci import GitLabCI
-from macaron.slsa_analyzer.ci_service.jenkins import Jenkins
 from macaron.slsa_analyzer.ci_service.travis import Travis
 from macaron.slsa_analyzer.registry import registry
 from macaron.slsa_analyzer.slsa_req import ReqName
@@ -262,10 +261,11 @@ class BuildAsCodeCheck(BaseCheck):
                                     trigger_link=trigger_link,
                                     job_id=(
                                         build_command["step_node"].caller.name
-                                        if isinstance(build_command["step_node"].caller, GitHubJobNode)
+                                        if build_command["step_node"]
+                                        and isinstance(build_command["step_node"].caller, GitHubJobNode)
                                         else None
                                     ),
-                                    step_id=build_command["step_node"].node_id,
+                                    step_id=build_command["step_node"].node_id if build_command["step_node"] else None,
                                     step_name=(
                                         build_command["step_node"].name
                                         if isinstance(build_command["step_node"], BashNode)
@@ -299,7 +299,7 @@ class BuildAsCodeCheck(BaseCheck):
 
                 # We currently don't parse these CI configuration files.
                 # We just look for a keyword for now.
-                for unparsed_ci in (Jenkins, Travis, CircleCI, GitLabCI):
+                for unparsed_ci in (Travis, CircleCI, GitLabCI):
                     if isinstance(ci_service, unparsed_ci):
                         if tool.ci_deploy_kws[ci_service.name]:
                             deploy_kw, config_name = ci_service.has_kws_in_config(
