@@ -19,13 +19,13 @@ from macaron.errors import CallGraphError, GitHubActionsValueError, ParseError
 from macaron.parsers.actionparser import get_step_input
 from macaron.parsers.actionparser import parse as parse_action
 from macaron.parsers.bashparser import BashNode, BashScriptType, create_bash_node
-from macaron.parsers.bashparser import parse as parse_bash
 from macaron.parsers.github_workflow_model import (
     ActionStep,
     Identified,
     Job,
     NormalJob,
     ReusableWorkflowCallJob,
+    RunStep,
     Step,
     Workflow,
     is_action_step,
@@ -97,40 +97,6 @@ class GitHubWorkflowNode(BaseNode):
         return f"GitHubWorkflowNode({self.name},{self.node_type})"
 
 
-class DockerNode(BaseNode):
-    """This class represents a callgraph node for when a Dockerfile is used as a build tool."""
-
-    def __init__(
-        self,
-        caller: GitHubWorkflowNode,
-        node_id: str | None = None,
-        dockerfile_path: str | None = None,
-    ) -> None:
-        """Initialize instance.
-
-        Parameters
-        ----------
-        caller : GithubWorkflowNode
-            The caller node.
-        build_tools_in_dockerfile : list
-            The list of build tools found in the Dockerfile.
-        node_id : str | None
-            The unique identifier of a node in the callgraph.
-        dockerfile_path : str | None
-            The path to the Dockerfile.
-        """
-        super().__init__(
-            caller=caller,
-            node_id=node_id,
-        )
-        self.dockerfile_path = dockerfile_path
-
-        # Add this node to caller's callee list if not already added
-        if caller and self not in caller.callee:
-            caller.add_callee(self)
-            logger.info("DockerNode successfully created and added to the caller's callee list.")
-
-
 class GitHubJobNode(BaseNode):
     """This class represents a callgraph node for GitHub Actions jobs."""
 
@@ -155,6 +121,39 @@ class GitHubJobNode(BaseNode):
 
     def __str__(self) -> str:
         return f"GitHubJobNode({self.name})"
+
+
+class DockerNode(BaseNode):
+    """This class represents a callgraph node for when a Dockerfile is used as a build tool."""
+
+    def __init__(
+        self,
+        caller: BaseNode,
+        dockerfile_path: str,
+        node_id: str | None = None,
+    ) -> None:
+        """Initialize instance.
+
+        Parameters
+        ----------
+        caller : GithubWorkflowNode
+            The caller node.
+        build_tools_in_dockerfile : list
+            The list of build tools found in the Dockerfile.
+        node_id : str | None
+            The unique identifier of a node in the callgraph.
+        dockerfile_path : str | None
+            The path to the Dockerfile.
+        """
+        super().__init__(
+            caller=caller,
+            node_id=node_id,
+        )
+        self.dockerfile_path = dockerfile_path
+        # Add this node to caller's callee list if not already added
+        if caller and self not in caller.callee:
+            caller.add_callee(self)
+            logger.info("DockerNode successfully created and added to the caller's callee list.")
 
 
 def is_parsed_obj_workflow(
@@ -335,8 +334,8 @@ def find_dockerfile_from_job(job_node: GitHubJobNode, repo_path: str) -> str | N
     steps = job_node.parsed_obj.obj.get("steps", [])
     if isinstance(steps, list):
         for step in steps:
-            # Handle 'run' steps
-            if "run" in step:
+            # Handle 'run' steps with docker build command
+            if not is_action_step(step) and "run" in step:
                 run_cmd = step["run"]
                 if "docker build" in run_cmd:
                     # Extract --file or -f argument
@@ -356,18 +355,45 @@ def find_dockerfile_from_job(job_node: GitHubJobNode, repo_path: str) -> str | N
                     dockerfile_path = os.path.join(repo_path, context_path, "Dockerfile")
                     return dockerfile_path
 
-            # Handle 'uses' steps
-            if "uses" in step and "with" in step:
+            # Handle 'uses' steps with docker-related actions
+            if "uses" in step:
                 uses_action = step["uses"]
-                with_section = step["with"]
-                if "docker/build-push-action" in uses_action and "file" in with_section:
-                    dockerfile_path = with_section["file"]
-                    logger.debug("dockerfile_path in uses step: %s", dockerfile_path)
-                    return (
-                        os.path.join(repo_path, dockerfile_path)
-                        if not os.path.isabs(dockerfile_path)
-                        else dockerfile_path
-                    )
+                # Check for docker/build-push-action or similar
+                if any(
+                    docker_action in uses_action
+                    for docker_action in [
+                        "docker/build-push-action",
+                        "docker/setup-buildx-action",
+                        "docker-build-push",  # Variations I found the most common
+                    ]
+                ):
+                    # Check if there's a 'with' section
+                    if "with" in step:
+                        with_section = step["with"]
+
+                        # Check for 'file' parameter (Dockerfile path)
+                        if "file" in with_section:
+                            dockerfile_path = with_section["file"]
+                            return (
+                                os.path.join(repo_path, dockerfile_path)
+                                if not os.path.isabs(dockerfile_path)
+                                else dockerfile_path
+                            )
+
+                        # Check for 'context' parameter (might have Dockerfile in that directory)
+                        if "context" in with_section and "file" not in with_section:
+                            context_path = with_section["context"]
+                            # Default to Dockerfile in the context directory
+                            dockerfile_path = os.path.join(repo_path, context_path, "Dockerfile")
+                            if os.path.exists(dockerfile_path):
+                                return dockerfile_path
+
+                    # If no file specified, check for default Dockerfile
+                    default_dockerfile = os.path.join(repo_path, "Dockerfile")
+                    if os.path.exists(default_dockerfile):
+                        logger.debug("Using default Dockerfile location")
+                        return default_dockerfile
+
     return None
 
 
@@ -382,36 +408,18 @@ def parse_run_commands(dockerfile_path: str) -> list[str]:
     Returns
     -------
     list[str]
-        A list of RUN commands.
+        A list of RUN commands found in the Dockerfile.
     """
-    dfp = DockerfileParser(path=dockerfile_path)
-    run_cmds = []
-    if "RUN" in dfp.content:
-        # extract the command after RUN , could be multiline
-        # Get all RUN commands from the Dockerfile
-        run_cmd = re.search(
-            r"RUN\s+(.+?)(?=\n(?:COPY|ADD|CMD|LABEL|EXPOSE|ENV|WORKDIR|VOLUME|USER|SHELL|ENTRYPOINT)\s|$)",
-            dfp.content,
-            re.DOTALL,
-        )
-        if run_cmd:
-            run_cmds.append(run_cmd.group(1).strip())
-    return run_cmds
-
-
-def create_docker_node(
-    node_id: str | None,
-    caller: GitHubWorkflowNode,
-    dockerfile_path: str,
-) -> DockerNode:
-    """Create a callgraph node for a Dockerfile."""
-    docker_node = DockerNode(
-        node_id=node_id,
-        caller=caller,
-        dockerfile_path=dockerfile_path,
-    )
-    logger.info("Created DockerNode with id: %s and path %s", node_id, dockerfile_path)
-    return docker_node
+    try:
+        run_cmds = []
+        with open(dockerfile_path, encoding="utf-8") as dockerfile:
+            dfp = DockerfileParser(fileobj=dockerfile)
+            for instruction in dfp.structure:
+                if instruction["instruction"] == "RUN":
+                    run_cmds.append(instruction["value"])
+            return run_cmds
+    except Exception as error:
+        raise CallGraphError(f"Error parsing Dockerfile at {dockerfile_path}: {error}") from error
 
 
 def build_call_graph_from_node(node: GitHubWorkflowNode, repo_path: str) -> None:
@@ -423,14 +431,104 @@ def build_call_graph_from_node(node: GitHubWorkflowNode, repo_path: str) -> None
         job_with_id = Identified[Job](job_name, job)
         job_node = GitHubJobNode(name=job_name, source_path=node.source_path, parsed_obj=job_with_id, caller=node)
         node.add_callee(job_node)
+
         if is_normal_job(job):
-            # Add third-party workflows.
-            steps = job.get("steps")
-            if steps is None:
+            # Process steps
+            steps = job_node.parsed_obj.obj.get("steps")
+            if not isinstance(steps, list):
                 continue
-            for step in steps:
+
+            for step_idx, step in enumerate(steps):
+                # First check if this step uses Docker
+                dockerfile_path = None
+                step_id = step.get("id", f"step_{step_idx}")
+
+                # Check for Docker usage in this specific step
+                if "run" in step:
+                    run_cmd = step["run"]
+                    if "docker build" in run_cmd:
+                        # Extract Dockerfile path from docker build command
+                        match = re.search(r"(?:--file|-f)\s+([^\s]+)", run_cmd)
+                        if match:
+                            dockerfile_path = match.group(1)
+                            dockerfile_path = (
+                                os.path.join(repo_path, dockerfile_path)
+                                if not os.path.isabs(dockerfile_path)
+                                else dockerfile_path
+                            )
+                        else:
+                            # Default to 'Dockerfile' in the build context
+                            context_match = re.search(r"docker build\s+([^\s]+)", run_cmd)
+                            context_path = context_match.group(1) if context_match else "."
+                            dockerfile_path = os.path.join(repo_path, context_path, "Dockerfile")
+
+                elif "uses" in step:
+                    uses_action = step["uses"]
+                    # Check for docker-related actions
+                    if any(
+                        docker_action in uses_action
+                        for docker_action in [
+                            "docker/build-push-action",
+                            "docker/setup-buildx-action",
+                            "docker-build-push",
+                        ]
+                    ):
+                        if "with" in step:
+                            with_section = step["with"]
+                            if "file" in with_section:
+                                dockerfile_path = (
+                                    with_section["file"]
+                                    if isinstance(with_section, dict) and "file" in with_section
+                                    else ""
+                                )
+                                dockerfile_path = (
+                                    os.path.join(repo_path, str(dockerfile_path))
+                                    if not os.path.isabs(str(dockerfile_path))
+                                    else dockerfile_path
+                                )
+
+                # If we found a Dockerfile process it
+                if dockerfile_path:
+
+                    # Create a DockerNode for this step
+                    docker_node = DockerNode(
+                        node_id=f"{job_name}_{step_id}_docker",
+                        caller=job_node,
+                        dockerfile_path=dockerfile_path,
+                    )
+                    if docker_node:
+                        job_node.add_callee(docker_node)
+                        logger.info("Created DockerNode with id: %s", docker_node.node_id)
+
+                    # Parse RUN commands from Dockerfile
+                    try:
+                        run_cmds = parse_run_commands(dockerfile_path)
+                        logger.info("RUN commands found in Dockerfile %s", run_cmd)
+
+                        for run_cmd in run_cmds:
+                            try:
+                                # Create a minimal step AST that contains the run command
+                                docker_step_ast = RunStep(run=run_cmd)
+
+                                docker_bash_node = create_bash_node(
+                                    name="Dockerfile-RUN",
+                                    node_id=f"{job_name}_{step_id}_docker_run_",
+                                    node_type=BashScriptType.INLINE,
+                                    source_path=dockerfile_path,
+                                    ci_step_ast=docker_step_ast,
+                                    repo_path=repo_path,
+                                    caller=docker_node,
+                                    recursion_depth=0,
+                                )
+                                docker_node.add_callee(docker_bash_node)
+                            except CallGraphError as error:
+                                logger.error("Error creating BashNode for Dockerfile RUN command %s", error)
+                    except CallGraphError as error:
+                        logger.error("Error parsing Dockerfile at %s: %s", dockerfile_path, error)
+
+                # Now handle the regular step processing
                 if is_action_step(step):
-                    # TODO: change source_path for external workflows.
+                    # External action that's not Docker-related (or is Docker but we already handled it)
                     action_name = step["uses"]
                     external_node = GitHubWorkflowNode(
                         name=action_name,
@@ -468,10 +566,41 @@ def build_call_graph_from_node(node: GitHubWorkflowNode, repo_path: str) -> None
                             caller=job_node,
                             recursion_depth=0,
                         )
+                        job_node.add_callee(callee)
+
+                        # Check if this step uses Docker build
+                        run_cmd = str(step.get("run", ""))
+                        if "docker build" in run_cmd:
+                            # Find the Dockerfile path from the docker build command
+                            dockerfile_path = None
+                            match = re.search(r"(?:--file|-f)\s+([^\s]+)", run_cmd)
+                            if match:
+                                dockerfile_path = match.group(1)
+                                dockerfile_path = (
+                                    os.path.join(repo_path, dockerfile_path)
+                                    if not os.path.isabs(dockerfile_path)
+                                    else dockerfile_path
+                                )
+                            else:
+                                # Default to 'Dockerfile' in the build context
+                                context_match = re.search(r"docker build\s+([^\s]+)", run_cmd)
+                                context_path = context_match.group(1) if context_match else "."
+                                dockerfile_path = os.path.join(repo_path, context_path, "Dockerfile")
+
+                            # If Dockerfile exists, parse it
+                            if dockerfile_path and os.path.exists(dockerfile_path):
+                                logger.info("Found Dockerfile at %s", dockerfile_path)
+                                docker_node = DockerNode(
+                                    node_id=f"{job_name}_{node_id}_docker" if node_id else f"{job_name}_docker",
+                                    caller=job_node,
+                                    dockerfile_path=dockerfile_path,
+                                )
+                                if docker_node:
+                                    logger.info("Adding DockerNode for Dockerfile %s", dockerfile_path)
+                                    job_node.add_callee(docker_node)
                     except CallGraphError as error:
                         logger.debug(error)
                         continue
-                    job_node.add_callee(callee)
         elif is_reusable_workflow_call_job(job):
             workflow_call_job_with_id = Identified[ReusableWorkflowCallJob](job_name, job)
             # Add reusable workflows.
@@ -486,40 +615,6 @@ def build_call_graph_from_node(node: GitHubWorkflowNode, repo_path: str) -> None
             )
             reusable_node.model = create_third_party_action_model(reusable_node)
             job_node.add_callee(reusable_node)
-        # Check if the job uses a Dockerfile.
-        # If the job uses a Dockerfile, parse the Dockerfile and find build tools.
-        dockerfile_path = find_dockerfile_from_job(job_node, repo_path)
-        if dockerfile_path:
-            # Parse RUN commands from Dockerfile
-            dfp = DockerfileParser(path=dockerfile_path)
-            if "RUN" in dfp.content:
-                run_cmds = parse_run_commands(dockerfile_path)
-                for run_cmd in run_cmds:
-                    # Parse the RUN instruction to create a BashNode
-                    run_step = parse_bash(run_cmd)
-                    logger.debug("Parsed RUN instruction: %s", run_step)
-                    # Find build tools in the RUN instruction
-                    docker_node = create_docker_node(
-                        node_id=job_name,
-                        caller=node,
-                        dockerfile_path=dockerfile_path,
-                    )
-                    node.add_callee(docker_node)
-                    # Create a BashNode for the RUN instruction
-                    try:
-                        callee = create_bash_node(
-                            name="Dockerfile-RUN",
-                            node_id=job_name,
-                            node_type=BashScriptType.INLINE,
-                            source_path=dockerfile_path,
-                            ci_step_ast=None,
-                            repo_path=repo_path,
-                            caller=docker_node,
-                            recursion_depth=0,
-                        )
-                        docker_node.add_callee(callee)
-                    except CallGraphError as error:
-                        logger.debug("Error creating BashNode for Dockerfile RUN command: %s", error)
 
         node.add_callee(job_node)
 
