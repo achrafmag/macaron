@@ -626,8 +626,8 @@ def build_call_graph_from_path(root: BaseNode, workflow_path: str, repo_path: st
 
     Parameters
     ----------
-    repo_path : str
-        The path to the repo.
+    root : BaseNode
+        The root call graph node.
     workflow_path: str
         The path to the CI workflow file.
     repo_path: str
